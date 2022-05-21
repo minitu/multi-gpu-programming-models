@@ -17,14 +17,14 @@ GENCODE_SM52	:= -gencode arch=compute_52,code=sm_52
 GENCODE_SM60    := -gencode arch=compute_60,code=sm_60
 GENCODE_SM70    := -gencode arch=compute_70,code=sm_70
 GENCODE_SM80    := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_80,code=compute_80
-GENCODE_FLAGS	:= $(GENCODE_SM70) $(GENCODE_SM80)
+GENCODE_FLAGS	:= $(GENCODE_SM70)
 ifdef DISABLE_CUB
         NVCC_FLAGS = -Xptxas --optimize-float-atomics
 else
         NVCC_FLAGS = -DHAVE_CUB
 endif
 NVCC_FLAGS += -dc -Xcompiler -fopenmp -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14 -I$(NVSHMEM_HOME)/include -I$(MPI_HOME)/include
-NVCC_LDFLAGS = -ccbin=mpic++ -L$(NVSHMEM_HOME)/lib -lnvshmem -L$(MPI_HOME)/lib -lmpi -L$(CUDA_HOME)/lib64 -lcuda -lcudart -lnvToolsExt -lnvidia-ml
+NVCC_LDFLAGS = -ccbin=mpic++ -L$(NVSHMEM_HOME)/lib -lnvshmem -L$(MPI_HOME)/lib -lmpi_ibm -L$(CUDA_HOME)/lib64 -lcuda -lcudart -lnvToolsExt -lnvidia-ml
 jacobi: Makefile jacobi.cu
 	$(NVCC) $(NVCC_FLAGS) jacobi.cu -c -o jacobi.o
 	$(NVCC) $(GENCODE_FLAGS) jacobi.o -o jacobi $(NVCC_LDFLAGS)
