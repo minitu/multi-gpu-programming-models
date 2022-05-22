@@ -455,6 +455,7 @@ int main(int argc, char* argv[]) {
         synccounter++;
 
         // perform L2 norm calculation
+        /*
         if ((iter % nccheck) == 0 || (!csv && (iter % 100) == 0)) {
             // as soon as computation is complete -> D2H-copy L2 norm
             CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_bufs[curr].h, l2_norm_bufs[curr].d, sizeof(real),
@@ -482,6 +483,7 @@ int main(int argc, char* argv[]) {
                                          cudaMemcpyHostToDevice, reset_l2_norm_stream));
             CUDA_RT_CALL(cudaEventRecord(reset_l2_norm_done[prev], reset_l2_norm_stream));
         }
+        */
 
         std::swap(a_new, a);
         iter++;
