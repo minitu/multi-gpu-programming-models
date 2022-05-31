@@ -2,7 +2,9 @@
 NP ?= 1
 NVCC=nvcc
 MPIRUN ?= mpirun
-CUDA_HOME ?= /usr/local/cuda
+CUDA_HOME ?= $(CUDA_DIR)
+NVSHMEM_HOME ?= $(HOME)/nvshmem-ref/install
+MPI_HOME ?= $(MPI_ROOT)
 ifndef NVSHMEM_HOME
 $(error NVSHMEM_HOME is not set)
 endif
