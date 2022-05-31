@@ -34,6 +34,10 @@
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+
+#define N_SMS 80
 
 #ifdef HAVE_CUB
 #include <cub/block/block_reduce.cuh>
@@ -154,50 +158,31 @@ __global__ void initialize_boundaries(real* __restrict__ const a_new, real* __re
     }
 }
 
-template <int BLOCK_DIM_X, int BLOCK_DIM_Y>
 __global__ void jacobi_kernel(real* __restrict__ const a_new, const real* __restrict__ const a,
                               real* __restrict__ const l2_norm, const int iy_start,
                               const int iy_end, const int nx, const int top_pe, const int top_iy,
                               const int bottom_pe, const int bottom_iy) {
-#ifdef HAVE_CUB
-    typedef cub::BlockReduce<real, BLOCK_DIM_X, cub::BLOCK_REDUCE_WARP_REDUCTIONS, BLOCK_DIM_Y>
-        BlockReduce;
-    __shared__ typename BlockReduce::TempStorage temp_storage;
-#endif  // HAVE_CUB
-    int iy = blockIdx.y * blockDim.y + threadIdx.y + iy_start;
-    int ix = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    real local_l2_norm = 0.0;
-
-    if (iy < iy_end && ix < (nx - 1)) {
+    for (int iy = iy_start; iy < iy_end ; iy++) {
+      for (int ix = blockIdx.x * blockDim.x + threadIdx.x + 1; ix < (nx - 1);
+          ix += gridDim.x * blockDim.x) {
         const real new_val = 0.25 * (a[iy * nx + ix + 1] + a[iy * nx + ix - 1] +
                                      a[(iy + 1) * nx + ix] + a[(iy - 1) * nx + ix]);
         a_new[iy * nx + ix] = new_val;
-        real residue = new_val - a[iy * nx + ix];
-        local_l2_norm += residue * residue;
+      }
     }
 
-    /* starting (x, y) coordinate of the block */
-    int block_iy =
-        iy - threadIdx.y; /* Alternatively, block_iy = blockIdx.y * blockDim.y + iy_start */
-    int block_ix = ix - threadIdx.x; /* Alternatively, block_ix = blockIdx.x * blockDim.x + 1 */
+    cg::grid_group grid = cg::this_grid();
+    grid.sync();
 
     /* Communicate the boundaries */
-    if ((block_iy <= iy_start) && (iy_start < block_iy + blockDim.y)) {
-        nvshmemx_float_put_nbi_block(a_new + top_iy * nx + block_ix, a_new + iy_start * nx + block_ix,
+    for (int block_ix = blockIdx.x * blockDim.x + 1; block_ix < ((nx + blockDim.x - 1) / blockDim.x);
+        block_ix += gridDim.x) {
+      nvshmemx_float_put_nbi_block(a_new + top_iy * nx + block_ix, a_new + iy_start * nx + block_ix,
                                    min(blockDim.x, nx - 1 - block_ix), top_pe);
+      nvshmemx_float_put_nbi_block(a_new + bottom_iy * nx + block_ix,
+                                 a_new + (iy_end - 1) * nx + block_ix,
+                                 min(blockDim.x, nx - 1 - block_ix), bottom_pe);
     }
-    if ((block_iy < iy_end) && (iy_end <= block_iy + blockDim.y)) {
-        nvshmemx_float_put_nbi_block(a_new + bottom_iy * nx + block_ix,
-                                   a_new + (iy_end - 1) * nx + block_ix,
-                                   min(blockDim.x, nx - 1 - block_ix), bottom_pe);
-    }
-
-#ifdef HAVE_CUB
-    real block_l2_norm = BlockReduce(temp_storage).Sum(local_l2_norm);
-    if (0 == threadIdx.y && 0 == threadIdx.x) atomicAdd(l2_norm, block_l2_norm);
-#else
-    atomicAdd(l2_norm, local_l2_norm);
-#endif  // HAVE_CUB
 }
 
 double single_gpu(const int nx, const int ny, const int iter_max, real* const a_ref_h,
@@ -411,8 +396,12 @@ int main(int argc, char* argv[]) {
 
     constexpr int dim_block_x = 1024;
     constexpr int dim_block_y = 1;
+    /*
     dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x,
                   (chunk_size + dim_block_y - 1) / dim_block_y, 1);
+                  */
+    dim3 dim_grid(N_SMS);
+    dim3 dim_block(dim_block_x, dim_block_y);
 
     int iter = 0;
     if (!mype) {
@@ -441,10 +430,18 @@ int main(int argc, char* argv[]) {
         int curr = (iter + 1) % 2;
 
         CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, reset_l2_norm_done[curr], 0));
-        jacobi_kernel<dim_block_x, dim_block_y>
+
+        int nx2 = nx;
+        void* args[] = {&a_new, &a, &l2_norm_bufs[curr].d, &iy_start, &iy_end, &nx2, &top_pe,
+          &iy_end_top, &bottom_pe, &iy_start_bottom};
+        nvshmemx_collective_launch((const void*)jacobi_kernel, dim_grid,
+            dim_block, args, 0, 0);
+        /*
+        jacobi_kernel
             <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream>>>(
                 a_new, a, l2_norm_bufs[curr].d, iy_start, iy_end, nx, top_pe, iy_end_top, bottom_pe,
                 iy_start_bottom);
+                */
         CUDA_RT_CALL(cudaGetLastError());
 
         /* Instead of using nvshmemx_barrier_all_on_stream, we are using a custom implementation
@@ -505,7 +502,7 @@ int main(int argc, char* argv[]) {
         for (int ix = 1; result_correct && (ix < (nx - 1)); ++ix) {
             if (std::fabs(a_ref_h[iy * nx + ix] - a_h[iy * nx + ix]) > tol) {
                 fprintf(stderr,
-                        "ERROR on rank %d: a[%d * %d + %d] = %f does not match %f "
+                        "ERROR on rank %d: a[%d * %d + %d] = %.8f does not match %.8f "
                         "(reference)\n",
                         rank, iy, nx, ix, a_h[iy * nx + ix], a_ref_h[iy * nx + ix]);
                 result_correct = false;
@@ -599,8 +596,12 @@ double single_gpu(const int nx, const int ny, const int iter_max, real* const a_
 
     constexpr int dim_block_x = 1024;
     constexpr int dim_block_y = 1;
+    /*
     dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x, ((ny - 2) + dim_block_y - 1) / dim_block_y,
                   1);
+                  */
+    dim3 dim_grid(N_SMS);
+    dim3 dim_block(dim_block_x, dim_block_y);
 
     int iter = 0;
     real l2_norm = 1.0;
@@ -612,9 +613,18 @@ double single_gpu(const int nx, const int ny, const int iter_max, real* const a_
     while (l2_norm > tol && iter < iter_max) {
         CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
 
-        jacobi_kernel<dim_block_x, dim_block_y>
+        int nx2 = nx;
+        int top_iy = iy_end + 1;
+        int bottom_iy = iy_start - 1;
+        void* args[] = {&a_new, &a, &l2_norm_d, &iy_start, &iy_end, &nx2, &mype,
+          &top_iy, &mype, &bottom_iy};
+        nvshmemx_collective_launch((const void*)jacobi_kernel, dim_grid,
+            dim_block, args, 0, 0);
+        /*
+        jacobi_kernel
             <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream>>>(
                 a_new, a, l2_norm_d, iy_start, iy_end, nx, mype, iy_end + 1, mype, (iy_start - 1));
+                */
         CUDA_RT_CALL(cudaGetLastError());
 
         /*
