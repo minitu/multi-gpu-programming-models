@@ -435,7 +435,7 @@ int main(int argc, char* argv[]) {
         void* args[] = {&a_new, &a, &l2_norm_bufs[curr].d, &iy_start, &iy_end, &nx2, &top_pe,
           &iy_end_top, &bottom_pe, &iy_start_bottom};
         nvshmemx_collective_launch((const void*)jacobi_kernel, dim_grid,
-            dim_block, args, 0, 0);
+            dim_block, args, 0, compute_stream);
         /*
         jacobi_kernel
             <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream>>>(
@@ -487,8 +487,8 @@ int main(int argc, char* argv[]) {
     }
 
     CUDA_RT_CALL(cudaDeviceSynchronize());
-    nvshmem_barrier_all();
     double stop = MPI_Wtime();
+    nvshmem_barrier_all();
     POP_RANGE
 
     nvshmem_barrier_all();
@@ -517,7 +517,8 @@ int main(int argc, char* argv[]) {
                            MPI_COMM_WORLD));
     result_correct = global_result_correct;
 
-    if (!mype && result_correct) {
+    //if (!mype && result_correct) {
+    if (result_correct) {
         if (csv) {
             printf("nvshmem_opt, %d, %d, %d, %d, %d, 1, %f, %f\n", nx, ny, iter_max, nccheck, npes,
                    (stop - start), runtime_serial);
@@ -621,7 +622,7 @@ double single_gpu(const int nx, const int ny, const int iter_max, real* const a_
         void* args[] = {&a_new, &a, &l2_norm_d, &iy_start, &iy_end, &nx2, &mype,
           &top_iy, &mype, &bottom_iy};
         nvshmemx_collective_launch((const void*)jacobi_kernel, dim_grid,
-            dim_block, args, 0, 0);
+            dim_block, args, 0, compute_stream);
         /*
         jacobi_kernel
             <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream>>>(
